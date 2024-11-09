@@ -1,0 +1,89 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: data-processing-wf-
+  labels:
+    workflows.argoproj.io/archive-strategy: "false"
+  annotations:
+    workflows.argoproj.io/description: |
+      ETL workflow with dynamic processing
+spec:
+  entrypoint: data-processing-dag
+  volumes:
+  - name: workdir
+    persistentVolumeClaim:
+      claimName: etl-volume
+  hostAliases:
+  - ip: "192.168.5.2"
+    hostnames:
+    - "host.minikube.internal"
+  templates:
+  - name: data-processing-dag
+    dag:
+      tasks:
+        - name: pre-processing
+          template: pre-processing
+          arguments:
+            parameters:
+            - name: fileName
+              value: "tmp/data_sheet.pdf"
+        - name: pre-processing-steps
+          dependencies: [pre-processing]
+          template: processing-steps
+          arguments:
+            parameters:
+            - name: processing_split
+              value: "{{tasks.pre-processing.outputs.parameters.processing_split}}"
+        - name: processing
+          dependencies: [pre-processing-steps]
+          template: processing
+          arguments:
+            parameters:
+            - name: fileName
+              value: "tmp/data_sheet.pdf"
+            - name: processing_unit
+              value: "{{item}}"
+          withParam: "{{tasks.pre-processing-steps.outputs.result}}"
+  - name: processing-steps
+    inputs:
+      parameters:
+      - name: processing_split
+    script:
+      image: python:alpine3.6
+      command: [python]
+      source: |
+        import json,sys
+        json.dump({{inputs.parameters.processing_split}}, sys.stdout)
+  - name: pre-processing
+    inputs:
+      parameters:
+      - name: fileName
+    outputs:
+      parameters:
+      - name: processing_split 
+        valueFrom:
+          path: processing_split.txt
+    container:
+      image: preprocessing:latest
+      imagePullPolicy: Never
+      volumeMounts:
+        - name: workdir
+          mountPath: /mnt/vol
+      env:
+        - name: MY_ENV_VAR
+          value: MY_ENV_VAR
+      command: ["python", "-m", "app.preprocessing"]
+      args: ["--file_path", "{{inputs.parameters.fileName}}"]
+  - name: processing
+    inputs:
+      parameters:
+      - name: fileName
+      - name: processing_unit
+    container:
+      image: processing:latest
+      imagePullPolicy: Never
+      volumeMounts:
+        - name: workdir
+          mountPath: /mnt/vol
+      command: ["python", "-m", "app.processing"]
+      args: ["--file_path", "{{inputs.parameters.fileName}}", "--processing_unit", "{{inputs.parameters.processing_unit}}"]
